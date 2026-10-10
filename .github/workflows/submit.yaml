@@ -1,0 +1,114 @@
+name: Submit WinGet Manifests
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to submit to microsoft/winget-pkgs'
+        type: choice
+        required: true
+        options:
+          - Octelium.Octelium
+          - Octelium.Octeliumctl
+          - Octelium.Octops
+          - Octelium.OcteliumDesktop
+      dry_run:
+        description: 'Show the generated pull request without submitting it'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: submit-winget
+  cancel-in-progress: false
+
+jobs:
+  test-winget:
+    uses: ./.github/workflows/test.yaml
+
+  submit:
+    needs: test-winget
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: winget
+    env:
+      KOMAC_VERSION: 2.16.0
+      KOMAC_SHA256: 7d2707fa6210f2789a3702de49fbd150b736dbf426ee0b9bc8e098736f9fd82d
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Komac
+        run: |
+          set -euo pipefail
+
+          curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 \
+            "https://github.com/russellbanks/Komac/releases/download/v${KOMAC_VERSION}/komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            -o "$RUNNER_TEMP/komac.tar.gz"
+          echo "${KOMAC_SHA256}  $RUNNER_TEMP/komac.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/komac"
+          tar -xzf "$RUNNER_TEMP/komac.tar.gz" -C "$RUNNER_TEMP/komac" komac
+          echo "$RUNNER_TEMP/komac" >> "$GITHUB_PATH"
+
+      - name: Resolve Manifests
+        env:
+          PACKAGE: ${{ inputs.package }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          NAME="${PACKAGE#Octelium.}"
+          mapfile -t DIRS < <(find "manifests/o/Octelium/$NAME" -mindepth 1 -maxdepth 1 -type d)
+          if [ "${#DIRS[@]}" -ne 1 ]; then
+            echo "Error: Expected exactly one recorded version of $PACKAGE."
+            exit 1
+          fi
+          VERSION="$(basename "${DIRS[0]}")"
+
+          STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --connect-timeout 10 --max-time 60 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/Octelium/$NAME/$VERSION")
+          if [ "$STATUS" = "200" ]; then
+            echo "Error: $PACKAGE $VERSION is already in microsoft/winget-pkgs."
+            exit 1
+          elif [ "$STATUS" != "404" ]; then
+            echo "Error: Could not check microsoft/winget-pkgs (HTTP $STATUS)."
+            exit 1
+          fi
+
+          OPEN_PRS=$(gh pr list --repo microsoft/winget-pkgs --state open \
+            --search "$PACKAGE $VERSION in:title" --json title,url \
+            | jq -r --arg id "$PACKAGE" --arg version "$VERSION" \
+              '.[] | select((.title | contains($id)) and (.title | contains($version))) | .url')
+          if [ -n "$OPEN_PRS" ]; then
+            echo "Error: $PACKAGE $VERSION already has an open pull request:"
+            echo "$OPEN_PRS"
+            exit 1
+          fi
+
+          echo "Submitting $PACKAGE $VERSION from ${DIRS[0]}"
+          echo "MANIFEST_DIR=${DIRS[0]}" >> "$GITHUB_ENV"
+
+      - name: Submit to WinGet
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          SUBMIT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "Error: The WINGET_TOKEN secret must be configured in the winget environment."
+            exit 1
+          fi
+
+          if [ "$SUBMIT_DRY_RUN" = "true" ]; then
+            komac submit "$MANIFEST_DIR" --dry-run
+          else
+            komac submit "$MANIFEST_DIR" --yes
+          fi

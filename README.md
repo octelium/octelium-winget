@@ -31,6 +31,12 @@ Restart the terminal after installing a CLI package so that the updated `PATH` t
 
 **Test WinGet Manifests** runs on x64 and ARM64 Windows runners. It installs a pinned WinGet release when the runner does not provide one, then validates the manifests and installs them together. It checks the MSI registration, the files, the `PATH` entries, the CLI versions and the desktop daemon service, then uninstalls each package while checking that the others remain usable. When it receives newly generated manifests, it first installs the version recorded here and tests `winget upgrade` from it, including preservation of the desktop daemon state.
 
+## Publishing
+
+Submissions use [Komac](https://github.com/russellbanks/Komac) with a classic GitHub token that has only the `public_repo` scope. The token is stored as the `WINGET_TOKEN` secret of the `winget` environment, which only the `main` branch can use. Komac forks `microsoft/winget-pkgs` under the token's account and opens one pull request per package version from that fork.
+
+To submit the recorded version of a package, run **Submit WinGet Manifests** with `dry_run` enabled to review the generated files, then run it again with `dry_run` disabled. The workflow repeats the Windows tests first and refuses to submit a version that is already published or has an open pull request. The first pull request from an account asks for Microsoft's Contributor License Agreement. After automated validation and moderator approval, the package becomes available once the WinGet catalog is republished.
+
 ## Signing
 
 The current MSIs are unsigned. WinGet's community repository does not require code signing, and the manifests verify each installer by SHA256. SHA256 does not establish a publisher identity, so SmartScreen, Smart App Control, antivirus or enterprise policies can still warn about or block unsigned installers and executables, whichever package manager installs them.
