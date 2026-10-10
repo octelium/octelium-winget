@@ -1,0 +1,69 @@
+name: Test WinGet Manifests
+
+on:
+  push:
+    paths:
+      - 'manifests/**'
+      - '.github/scripts/**'
+      - '.github/workflows/test.yaml'
+  pull_request:
+    paths:
+      - 'manifests/**'
+      - '.github/scripts/**'
+      - '.github/workflows/test.yaml'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      manifests_artifact:
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  test-winget:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Generated Manifests
+        if: inputs.manifests_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.manifests_artifact }}
+          path: ${{ runner.temp }}/generated
+
+      - name: Install WinGet
+        shell: powershell
+        run: ./.github/scripts/install-winget.ps1
+
+      - name: Test Install, Upgrade and Uninstall
+        shell: pwsh
+        env:
+          MANIFESTS_ARTIFACT: ${{ inputs.manifests_artifact }}
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP 'winget-logs'
+          if ($env:MANIFESTS_ARTIFACT) {
+            ./.github/scripts/test-manifests.ps1 -ManifestRoot (Join-Path $env:RUNNER_TEMP 'generated') -BaselineRoot . -LogDir $logDir
+          } else {
+            ./.github/scripts/test-manifests.ps1 -ManifestRoot . -LogDir $logDir
+          }
+
+      - name: Upload WinGet Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget-logs-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/winget-logs
+            C:/ProgramData/Octelium Desktop/installer-error.log
+          if-no-files-found: ignore
+          retention-days: 7
